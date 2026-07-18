@@ -219,8 +219,8 @@ namespace NinjaTrader.Gui.NinjaScript
                 catch (Exception error)
                 {
                     logout(string.Format("ERROR: Unable to create the CSV root directory \"{0}\": {1}", csvDir, error.ToString()));
+                    return;
                 }
-                return;
             }
 
             Globals.RandomDispatcher.InvokeAsync(new Action(() =>

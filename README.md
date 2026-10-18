@@ -7,16 +7,44 @@
 </div>
 
 #
-**NinjaTrader 8** AddOn to convert NRD (`*.nrd`) market replay files to CSV (`*.csv`)<br>
+**NinjaTrader 8** AddOn to convert NRD (`*.nrd`) market replay files to CSV (`*.csv`) or NumPy (`*.npy`)<br>
 (based on [not yet documented][market-data] `MarketReplay.DumpMarketDepth` feature)
 
 ## Quick Start
 
 1. Download the latest **zip file** with AddOn from [Releases][releases]
 2. Import AddOn into NinjaTrader 8 via `Tools` / `Import` / `NinjaScript Add-On...`
-3. Open NRD to CSV tool via `Tools` / `NRD to CSV`
+3. Open the converter via `Tools` / `NRD to CSV/NPY`
+4. Choose CSV or NPY and set the output directory
 5. Press **Convert** button to convert all `*.nrd` replay files (could take some time to proceed)
-6. Check `Documents` \ `NinjaTrader 8` \ `db` \ `replay.csv` folder with the results
+6. Check the selected output directory for the results
+
+## NumPy (`*.npy`) output
+
+NPY output stores each file as a one-dimensional structured NumPy array. The array has these fields:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `level` | `uint8` | `1` for L1 or `2` for L2 |
+| `market_data_type` | `uint8` | NinjaTrader `MarketDataType` value |
+| `timestamp` | `int64` | `YYYYMMDDhhmmss` local NinjaTrader timestamp |
+| `timestamp_offset` | `int32` | Offset in 100-nanosecond units |
+| `operation` | `uint8` | NinjaTrader operation for L2; zero for L1 |
+| `position` | `int32` | Order book position for L2; zero for L1 |
+| `market_maker` | fixed-width bytes | UTF-8 market maker identifier for L2; empty for L1 |
+| `price` | `float64` | Price parsed using the local NinjaTrader number format |
+| `volume` | `int64` | Volume |
+
+The `market_maker` field width is set to the longest value in that output file. For example:
+
+```python
+import numpy as np
+
+records = np.load("ES 12-26/20210120.npy")
+print(records.dtype.names)
+print(records["price"])
+print(records["market_maker"][0].decode("utf-8"))
+```
 
 ## Filter files to convert
 

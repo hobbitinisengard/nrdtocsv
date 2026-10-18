@@ -2,9 +2,11 @@
 using System;
 using System.Collections.ObjectModel;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -28,7 +30,7 @@ namespace NinjaTrader.Gui.NinjaScript
             if (State == State.SetDefaults)
             {
                 Name = "NRDToCSV";
-                Description = "*.nrd to *.csv market replay files convertion";
+                Description = "*.nrd market replay files conversion to CSV or NPY";
             }
         }
 
@@ -40,7 +42,7 @@ namespace NinjaTrader.Gui.NinjaScript
             existingMenuItemInControlCenter = cc.FindFirst("ControlCenterMenuItemTools") as NTMenuItem;
             if (existingMenuItemInControlCenter == null) return;
 
-            menuItem = new NTMenuItem { Header = "NRD to CSV", Style = Application.Current.TryFindResource("MainMenuItem") as Style };
+            menuItem = new NTMenuItem { Header = "NRD to CSV/NPY", Style = Application.Current.TryFindResource("MainMenuItem") as Style };
             existingMenuItemInControlCenter.Items.Add(menuItem);
             menuItem.Click += OnMenuItemClick;
         }
@@ -66,8 +68,9 @@ namespace NinjaTrader.Gui.NinjaScript
     {
         private static readonly int PARALLEL_THREADS_COUNT = 4;
 
-        private TextBox tbCsvRootDir;
+        private TextBox tbOutputRootDir;
         private TextBox tbSelectedInstruments;
+        private ComboBox cbOutputFormat;
         private Button bConvert;
         private TextBox tbOutput;
         private Label lProgress;
@@ -78,10 +81,12 @@ namespace NinjaTrader.Gui.NinjaScript
         private long totalFilesLength;
         private bool running = false;
         private bool canceling = false;
+        private bool restoringWorkspace = false;
+        private string lastSelectedOutputFormat = "CSV";
 
         public NRDToCSVWindow()
         {
-            Caption = "NRD to CSV";
+            Caption = "NRD to CSV/NPY";
             Width = 512;
             Height = 512;
             Content = BuildContent();
@@ -108,17 +113,28 @@ namespace NinjaTrader.Gui.NinjaScript
         private DependencyObject BuildContent()
         {
             double margin = (double)FindResource("MarginBase");
-            tbCsvRootDir = new TextBox()
+            tbOutputRootDir = new TextBox()
             {
                 Margin = new Thickness(margin, 0, margin, margin),
                 Text = Path.Combine(Globals.UserDataDir, "db", "replay.csv"),
             };
-            Label lCsvRootDir = new Label()
+            Label lOutputRootDir = new Label()
             {
                 Foreground = FindResource("FontLabelBrush") as Brush,
                 Margin = new Thickness(margin, 0, margin, 0),
-                Content = "Root directory of converted CSV files:",
+                Content = "Root directory of converted files:",
             };
+            Label lOutputFormat = new Label()
+            {
+                Foreground = FindResource("FontLabelBrush") as Brush,
+                Margin = new Thickness(margin, 0, margin, 0),
+                Content = "Output format:",
+            };
+            cbOutputFormat = new ComboBox() { Margin = new Thickness(margin, 0, margin, margin) };
+            cbOutputFormat.Items.Add("CSV");
+            cbOutputFormat.Items.Add("NPY");
+            cbOutputFormat.SelectedItem = "CSV";
+            cbOutputFormat.SelectionChanged += OnOutputFormatChanged;
             tbSelectedInstruments = new TextBox() { Margin = new Thickness(margin, 0, margin, margin) };
             Label lSelectedInstruments = new Label()
             {
@@ -151,19 +167,25 @@ namespace NinjaTrader.Gui.NinjaScript
             grid.RowDefinitions.Add(new RowDefinition() { Height = GridLength.Auto });
             grid.RowDefinitions.Add(new RowDefinition() { Height = GridLength.Auto });
             grid.RowDefinitions.Add(new RowDefinition() { Height = GridLength.Auto });
+            grid.RowDefinitions.Add(new RowDefinition() { Height = GridLength.Auto });
+            grid.RowDefinitions.Add(new RowDefinition() { Height = GridLength.Auto });
             grid.RowDefinitions.Add(new RowDefinition() { Height = new GridLength(1, GridUnitType.Star) });
             grid.RowDefinitions.Add(new RowDefinition() { Height = GridLength.Auto });
             grid.RowDefinitions.Add(new RowDefinition() { Height = GridLength.Auto });
-            Grid.SetRow(lCsvRootDir, 0);
-            Grid.SetRow(tbCsvRootDir, 1);
-            Grid.SetRow(lSelectedInstruments, 2);
-            Grid.SetRow(tbSelectedInstruments, 3);
-            Grid.SetRow(bConvert, 4);
-            Grid.SetRow(tbOutput, 5);
-            Grid.SetRow(lProgress, 6);
-            Grid.SetRow(pbProgress, 7);
-            grid.Children.Add(lCsvRootDir);
-            grid.Children.Add(tbCsvRootDir);
+            Grid.SetRow(lOutputRootDir, 0);
+            Grid.SetRow(tbOutputRootDir, 1);
+            Grid.SetRow(lOutputFormat, 2);
+            Grid.SetRow(cbOutputFormat, 3);
+            Grid.SetRow(lSelectedInstruments, 4);
+            Grid.SetRow(tbSelectedInstruments, 5);
+            Grid.SetRow(bConvert, 6);
+            Grid.SetRow(tbOutput, 7);
+            Grid.SetRow(lProgress, 8);
+            Grid.SetRow(pbProgress, 9);
+            grid.Children.Add(lOutputRootDir);
+            grid.Children.Add(tbOutputRootDir);
+            grid.Children.Add(lOutputFormat);
+            grid.Children.Add(cbOutputFormat);
             grid.Children.Add(lSelectedInstruments);
             grid.Children.Add(tbSelectedInstruments);
             grid.Children.Add(bConvert);
@@ -173,10 +195,27 @@ namespace NinjaTrader.Gui.NinjaScript
             return grid;
         }
 
+        private void OnOutputFormatChanged(object sender, SelectionChangedEventArgs e)
+        {
+            string selectedFormat = cbOutputFormat == null ? null : cbOutputFormat.SelectedItem as string;
+            if (string.IsNullOrEmpty(selectedFormat)) return;
+
+            if (!restoringWorkspace && tbOutputRootDir != null &&
+                string.Equals(tbOutputRootDir.Text, GetDefaultOutputRoot(lastSelectedOutputFormat), StringComparison.OrdinalIgnoreCase))
+                tbOutputRootDir.Text = GetDefaultOutputRoot(selectedFormat);
+
+            lastSelectedOutputFormat = selectedFormat;
+        }
+
+        private static string GetDefaultOutputRoot(string format)
+        {
+            return Path.Combine(Globals.UserDataDir, "db", "replay." + format.ToLowerInvariant());
+        }
+
         private void OnConvertButtonClick(object sender, RoutedEventArgs e)
         {
             if (tbOutput == null) return;
-                logout("Run convertion...");
+            logout("Run conversion...");
 
             if (running)
             {
@@ -193,7 +232,9 @@ namespace NinjaTrader.Gui.NinjaScript
             tbOutput.Clear();
 
             string nrdDir = Path.Combine(Globals.UserDataDir, "db", "replay");
-            string csvDir = tbCsvRootDir.Text;
+            string outputRootDir = tbOutputRootDir.Text;
+            string outputFormat = cbOutputFormat.SelectedItem as string;
+            string outputExtension = string.Equals(outputFormat, "NPY", StringComparison.OrdinalIgnoreCase) ? ".npy" : ".csv";
             List<Regex> selectedInstruments = tbSelectedInstruments.Text.IsNullOrEmpty() ? null :
                 tbSelectedInstruments.Text.Split(';').Select(p => new Regex(p.Trim())).ToList();
 
@@ -210,15 +251,15 @@ namespace NinjaTrader.Gui.NinjaScript
                 return;
             }
 
-            if (!Directory.Exists(csvDir))
+            if (!Directory.Exists(outputRootDir))
             {
                 try
                 {
-                    Directory.CreateDirectory(csvDir);
+                    Directory.CreateDirectory(outputRootDir);
                 }
                 catch (Exception error)
                 {
-                    logout(string.Format("ERROR: Unable to create the CSV root directory \"{0}\": {1}", csvDir, error.ToString()));
+                    logout(string.Format("ERROR: Unable to create the output root directory \"{0}\": {1}", outputRootDir, error.ToString()));
                     return;
                 }
             }
@@ -229,7 +270,7 @@ namespace NinjaTrader.Gui.NinjaScript
                 totalFilesLength = 0;
                 List<DumpEntry> entries = new List<DumpEntry>();
                 foreach (string subDir in nrdSubDirs)
-                    ProceedDirectory(entries, nrdDir, subDir, csvDir, selectedInstruments);
+                    ProceedDirectory(entries, nrdDir, subDir, outputRootDir, outputExtension, outputFormat, selectedInstruments);
                 if (entries.Count == 0)
                 {
                     logout("No *.nrd files found to convert");
@@ -248,7 +289,8 @@ namespace NinjaTrader.Gui.NinjaScript
             }));
         }
 
-        private void ProceedDirectory(List<DumpEntry> entries, string nrdRoot, string nrdDir, string csvDir, List<Regex> selectedInstruments)
+        private void ProceedDirectory(List<DumpEntry> entries, string nrdRoot, string nrdDir, string outputRootDir,
+            string outputExtension, string outputFormat, List<Regex> selectedInstruments)
         {
             string[] fileEntries = Directory.GetFiles(nrdDir, "*.nrd");
             if (fileEntries.Length == 0)
@@ -278,11 +320,11 @@ namespace NinjaTrader.Gui.NinjaScript
                 }
                 Cbi.Instrument instrument = instruments[0];
                 string name = Path.GetFileNameWithoutExtension(fileName);
-                string csvFileName = string.Format("{0}.csv", Path.Combine(csvDir, instrument.FullName, name));
-                if (File.Exists(csvFileName))
+                string outputFileName = Path.Combine(outputRootDir, instrument.FullName, name + outputExtension);
+                if (File.Exists(outputFileName))
                 {
                     logout(string.Format("Conversion \"{0}\" to \"{1}\" is done already. Skipped",
-                        relativeName.Substring(1), csvFileName.Substring(csvDir.Length + 1)));
+                        relativeName.Substring(1), outputFileName.Substring(outputRootDir.Length + 1)));
                     continue;
                 }
                 long nrdFileLength = new FileInfo(fileName).Length;
@@ -295,9 +337,10 @@ namespace NinjaTrader.Gui.NinjaScript
                         Convert.ToInt16(name.Substring(0, 4)),
                         Convert.ToInt16(name.Substring(4, 2)),
                         Convert.ToInt16(name.Substring(6, 2))),
-                    CsvFileName = csvFileName,
+                    OutputFileName = outputFileName,
+                    OutputFormat = outputFormat,
                     FromName = relativeName.Substring(1),
-                    ToName = csvFileName.Substring(csvDir.Length + 1),
+                    ToName = outputFileName.Substring(outputRootDir.Length + 1),
                 });
             }
         }
@@ -344,23 +387,41 @@ namespace NinjaTrader.Gui.NinjaScript
         {
             logout(string.Format("Conversion \"{0}\" to \"{1}\"...", entry.FromName, entry.ToName));
 
-            string csvFileDir = Path.GetDirectoryName(entry.CsvFileName);
-            if (!Directory.Exists(csvFileDir))
+            string outputFileDir = Path.GetDirectoryName(entry.OutputFileName);
+            string tempCsvFileName = null;
+            string tempOutputFileName = null;
+            if (!Directory.Exists(outputFileDir))
             {
                 try
                 {
-                    Directory.CreateDirectory(csvFileDir);
+                    Directory.CreateDirectory(outputFileDir);
                 }
                 catch (Exception error)
                 {
-                    logout(string.Format("ERROR: Unable to create the CSV file directory \"{0}\": {1}",
-                        csvFileDir, error.ToString()));
+                    logout(string.Format("ERROR: Unable to create the output file directory \"{0}\": {1}",
+                        outputFileDir, error.ToString()));
+                    return;
                 }
             }
 
             try
             {
-                MarketReplay.DumpMarketDepth(entry.Instrument, entry.Date.AddDays(1), entry.Date.AddDays(1), entry.CsvFileName);
+                if (string.Equals(entry.OutputFormat, "NPY", StringComparison.OrdinalIgnoreCase))
+                {
+                    string tempName = Path.GetFileNameWithoutExtension(entry.OutputFileName) + "." + Guid.NewGuid().ToString("N");
+                    tempCsvFileName = Path.Combine(outputFileDir, tempName + ".csv");
+                    tempOutputFileName = Path.Combine(outputFileDir, tempName + ".npy");
+                    MarketReplay.DumpMarketDepth(entry.Instrument, entry.Date.AddDays(1), entry.Date.AddDays(1), tempCsvFileName);
+                    ConvertCsvToNpy(tempCsvFileName, tempOutputFileName);
+                }
+                else
+                {
+                    string tempName = Path.GetFileNameWithoutExtension(entry.OutputFileName) + "." + Guid.NewGuid().ToString("N") + ".tmp.csv";
+                    tempOutputFileName = Path.Combine(outputFileDir, tempName);
+                    MarketReplay.DumpMarketDepth(entry.Instrument, entry.Date.AddDays(1), entry.Date.AddDays(1), tempOutputFileName);
+                }
+
+                File.Move(tempOutputFileName, entry.OutputFileName);
                 logout(string.Format("Conversion \"{0}\" to \"{1}\" complete", entry.FromName, entry.ToName));
             }
             catch (Exception error)
@@ -368,6 +429,151 @@ namespace NinjaTrader.Gui.NinjaScript
                 logout(string.Format("ERROR: Conversion \"{0}\" to \"{1}\" failed: {2}", 
                     entry.FromName, entry.ToName, error.ToString()));
             }
+            finally
+            {
+                DeleteTemporaryFile(tempCsvFileName);
+                DeleteTemporaryFile(tempOutputFileName);
+            }
+        }
+
+        private static void DeleteTemporaryFile(string fileName)
+        {
+            if (!string.IsNullOrEmpty(fileName) && File.Exists(fileName))
+            {
+                try { File.Delete(fileName); }
+                catch { }
+            }
+        }
+
+        private static void ConvertCsvToNpy(string csvFileName, string npyFileName)
+        {
+            long recordCount = 0;
+            int marketMakerWidth = 1;
+            using (StreamReader reader = new StreamReader(csvFileName, Encoding.UTF8, true))
+            {
+                string line;
+                while ((line = reader.ReadLine()) != null)
+                {
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    List<string> fields = SplitDelimitedLine(line);
+                    ValidateRecord(fields);
+                    if (fields[0].Equals("L2", StringComparison.OrdinalIgnoreCase))
+                        marketMakerWidth = Math.Max(marketMakerWidth, Encoding.UTF8.GetByteCount(fields[6]));
+                    recordCount++;
+                }
+            }
+
+            string header = string.Format(CultureInfo.InvariantCulture,
+                "{{'descr': [('level', '|u1'), ('market_data_type', '|u1'), ('timestamp', '<i8'), ('timestamp_offset', '<i4'), ('operation', '|u1'), ('position', '<i4'), ('market_maker', '|S{0}'), ('price', '<f8'), ('volume', '<i8')], 'fortran_order': False, 'shape': ({1},), }}",
+                marketMakerWidth, recordCount);
+            int padding = (16 - ((10 + header.Length + 1) % 16)) % 16;
+            byte[] headerBytes = Encoding.ASCII.GetBytes(header + new string(' ', padding) + "\n");
+            if (headerBytes.Length > ushort.MaxValue)
+                throw new InvalidDataException("The NPY header is too large for format version 1.0.");
+
+            using (FileStream output = new FileStream(npyFileName, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            using (BinaryWriter writer = new BinaryWriter(output, Encoding.ASCII))
+            {
+                writer.Write((byte)0x93);
+                writer.Write(Encoding.ASCII.GetBytes("NUMPY"));
+                writer.Write((byte)1);
+                writer.Write((byte)0);
+                writer.Write((ushort)headerBytes.Length);
+                writer.Write(headerBytes);
+
+                long recordsWritten = 0;
+                byte[] marketMakerBuffer = new byte[marketMakerWidth];
+                using (StreamReader reader = new StreamReader(csvFileName, Encoding.UTF8, true))
+                {
+                    string line;
+                    while ((line = reader.ReadLine()) != null)
+                    {
+                        if (string.IsNullOrWhiteSpace(line)) continue;
+                        List<string> fields = SplitDelimitedLine(line);
+                        WriteNpyRecord(writer, fields, marketMakerBuffer);
+                        recordsWritten++;
+                    }
+                }
+
+                if (recordsWritten != recordCount)
+                    throw new IOException("The CSV file changed while it was being converted.");
+            }
+        }
+
+        private static List<string> SplitDelimitedLine(string line)
+        {
+            List<string> fields = new List<string>();
+            StringBuilder field = new StringBuilder();
+            bool inQuotes = false;
+            for (int i = 0; i < line.Length; i++)
+            {
+                char c = line[i];
+                if (c == '"')
+                {
+                    if (inQuotes && i + 1 < line.Length && line[i + 1] == '"')
+                    {
+                        field.Append('"');
+                        i++;
+                    }
+                    else
+                    {
+                        inQuotes = !inQuotes;
+                    }
+                }
+                else if (c == ';' && !inQuotes)
+                {
+                    fields.Add(field.ToString());
+                    field.Clear();
+                }
+                else
+                {
+                    field.Append(c);
+                }
+            }
+
+            if (inQuotes) throw new FormatException("The CSV record contains an unterminated quoted field.");
+            fields.Add(field.ToString());
+            return fields;
+        }
+
+        private static void ValidateRecord(List<string> fields)
+        {
+            if (fields.Count == 6 && fields[0].Equals("L1", StringComparison.OrdinalIgnoreCase)) return;
+            if (fields.Count == 9 && fields[0].Equals("L2", StringComparison.OrdinalIgnoreCase)) return;
+            throw new FormatException("Unexpected market depth CSV record format.");
+        }
+
+        private static void WriteNpyRecord(BinaryWriter writer, List<string> fields, byte[] marketMakerBuffer)
+        {
+            ValidateRecord(fields);
+            bool levelTwo = fields[0].Equals("L2", StringComparison.OrdinalIgnoreCase);
+            int typeIndex = 1;
+            int timestampIndex = 2;
+            int offsetIndex = 3;
+            int operationIndex = levelTwo ? 4 : -1;
+            int positionIndex = levelTwo ? 5 : -1;
+            int marketMakerIndex = levelTwo ? 6 : -1;
+            int priceIndex = levelTwo ? 7 : 4;
+            int volumeIndex = levelTwo ? 8 : 5;
+
+            writer.Write((byte)(levelTwo ? 2 : 1));
+            writer.Write(byte.Parse(fields[typeIndex], CultureInfo.InvariantCulture));
+            writer.Write(long.Parse(fields[timestampIndex], CultureInfo.InvariantCulture));
+            writer.Write(int.Parse(fields[offsetIndex], CultureInfo.InvariantCulture));
+            writer.Write(levelTwo ? byte.Parse(fields[operationIndex], CultureInfo.InvariantCulture) : (byte)0);
+            writer.Write(levelTwo ? int.Parse(fields[positionIndex], CultureInfo.InvariantCulture) : 0);
+
+            Array.Clear(marketMakerBuffer, 0, marketMakerBuffer.Length);
+            if (levelTwo)
+            {
+                byte[] marketMaker = Encoding.UTF8.GetBytes(fields[marketMakerIndex]);
+                if (marketMaker.Length > marketMakerBuffer.Length)
+                    throw new InvalidDataException("A market maker value is wider than the NPY field.");
+                Buffer.BlockCopy(marketMaker, 0, marketMakerBuffer, 0, marketMaker.Length);
+            }
+            writer.Write(marketMakerBuffer);
+            writer.Write(double.Parse(fields[priceIndex], NumberStyles.Float | NumberStyles.AllowThousands, CultureInfo.CurrentCulture));
+            writer.Write(long.Parse(fields[volumeIndex], CultureInfo.CurrentCulture));
         }
 
         public void Restore(XDocument document, XElement element)
@@ -376,13 +582,24 @@ namespace NinjaTrader.Gui.NinjaScript
             {
                 if (elRoot.Name.LocalName.Contains("NRDToCSV"))
                 {
-                    XElement elCsvRootDir = elRoot.Element("CsvRootDir");
-                    if (elCsvRootDir != null)
-                        tbCsvRootDir.Text = elCsvRootDir.Value;
+                    restoringWorkspace = true;
+                    XElement elOutputRootDir = elRoot.Element("OutputRootDir");
+                    if (elOutputRootDir == null)
+                        elOutputRootDir = elRoot.Element("CsvRootDir");
+                    if (elOutputRootDir != null)
+                        tbOutputRootDir.Text = elOutputRootDir.Value;
+
+                    XElement elOutputFormat = elRoot.Element("OutputFormat");
+                    if (elOutputFormat != null && (elOutputFormat.Value == "CSV" || elOutputFormat.Value == "NPY"))
+                    {
+                        cbOutputFormat.SelectedItem = elOutputFormat.Value;
+                        lastSelectedOutputFormat = elOutputFormat.Value;
+                    }
 
                     XElement elSelectedInstruments = elRoot.Element("SelectedInstruments");
                     if (elSelectedInstruments != null)
                         tbSelectedInstruments.Text = elSelectedInstruments.Value;
+                    restoringWorkspace = false;
                 }
             }
         }
@@ -391,9 +608,13 @@ namespace NinjaTrader.Gui.NinjaScript
         {
             element.Elements().Where(el => el.Name.LocalName.Equals("NRDToCSV")).Remove();
             XElement elRoot = new XElement("NRDToCSV");
-            XElement elCsvRootDir = new XElement("CsvRootDir", tbCsvRootDir.Text);
+            XElement elOutputRootDir = new XElement("OutputRootDir", tbOutputRootDir.Text);
+            XElement elCsvRootDir = new XElement("CsvRootDir", tbOutputRootDir.Text);
+            XElement elOutputFormat = new XElement("OutputFormat", cbOutputFormat.SelectedItem as string ?? "CSV");
             XElement elSelectedInstruments = new XElement("SelectedInstruments", tbSelectedInstruments.Text);
+            elRoot.Add(elOutputRootDir);
             elRoot.Add(elCsvRootDir);
+            elRoot.Add(elOutputFormat);
             elRoot.Add(elSelectedInstruments);
             element.Add(elRoot);
         }
@@ -417,7 +638,8 @@ namespace NinjaTrader.Gui.NinjaScript
                 canceling = false;
                 bConvert.IsEnabled = true;
                 bConvert.Content = "_Cancel";
-                tbCsvRootDir.IsReadOnly = true;
+                tbOutputRootDir.IsReadOnly = true;
+                cbOutputFormat.IsEnabled = false;
                 tbSelectedInstruments.IsReadOnly = true;
                 double margin = (double)FindResource("MarginBase");
                 lProgress.Height = 24;
@@ -439,7 +661,8 @@ namespace NinjaTrader.Gui.NinjaScript
                 lProgress.Height = 0;
                 pbProgress.Margin = new Thickness(0);
                 pbProgress.Height = 0;
-                tbCsvRootDir.IsReadOnly = false;
+                tbOutputRootDir.IsReadOnly = false;
+                cbOutputFormat.IsEnabled = true;
                 tbSelectedInstruments.IsReadOnly = false;
                 bConvert.IsEnabled = true;
                 bConvert.Content = "_Convert";
@@ -459,7 +682,8 @@ namespace NinjaTrader.Gui.NinjaScript
         public long NrdLength { get; set; }
         public Cbi.Instrument Instrument { get; set; }
         public DateTime Date { get; set; }
-        public string CsvFileName { get; set; }
+        public string OutputFileName { get; set; }
+        public string OutputFormat { get; set; }
         public string FromName { get; set; }
         public string ToName { get; set; }
     }

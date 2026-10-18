@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Conversion exception handling
 - Additional run notifications
+- NPY output option for compact binary market depth files
 
 ### Changed
 - Minor UI adjustments
